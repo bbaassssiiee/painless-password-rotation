@@ -1,6 +1,8 @@
-#!/bin/bash -el
+#!/bin/bash -l
 # Script for rotating passwords on the local machine.
 # Make sure and store VAULT_TOKEN and VAULT_ADDR as environment variables.
+
+set -oue pipefail
 
 # Check for usage
 if [[ $# -ne 1 ]]; then
@@ -22,10 +24,11 @@ curl -sS -k --fail -X POST -H "X-Vault-Token: $VAULT_TOKEN" "${VAULT_ADDR}/v1/au
 retval=$?
 if [[ $retval -ne 0 ]]; then
   echo "Error renewing Vault token lease."
+  exit 1
 fi
 
 # If you have the jq package installed, this is a lot cleaner...
-NEWPASS=$(curl -sS -k --fail -X POST -H "X-Vault-Token: $VAULT_TOKEN" -H "Content-Type: application/json" --data '{"words":"4","separator":"-"}'  "${VAULT_ADDR}/v1/gen/passphrase" | jq -r '.data|.value')
+NEWPASS=$(curl -sS -k --fail -X POST -H "X-Vault-Token: $VAULT_TOKEN" -H "Content-Type: application/json" --data '{"words":"4","separator":"."}'  "${VAULT_ADDR}/v1/gen/passphrase" | jq -r '.data|.value')
 
 # Otherwise you can use grep and awk:
 
