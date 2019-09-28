@@ -1,0 +1,154 @@
+---
+
+- name: install jq
+  package:
+    name: jq
+    state: present
+
+- name: copy rotation script
+  when: ansible_system == 'Linux'
+  copy:
+    src: rotate_linux_password.sh
+    dest: /usr/local/bin/
+    owner: root
+    group: root
+    mode: 0755
+  tags:
+    - install
+
+- name: copy rotation script
+  when: ansible_system == 'Windows'
+  copy:
+    src: rotate_windows_password.ps1
+    dest: "C:/Progam Files/"
+    owner: Administrator
+    group: System
+  tags:
+    - install
+
+- name: create cronjob
+  when: ansible_system == 'Linux'
+  cron:
+    name: rotate password
+    weekday: '*'
+    minute: '0'
+    hour: '*'
+    user: root
+    job: "/usr/local/bin/rotate_linux_password.sh root"
+  tags:
+    - install
+
+- name: enable a key/value v2 secrets engine
+  run_once: true
+  delegate_to: "{{ groups.vault_instances[0] }}"
+  environment:
+    VAULT_ADDR: "https://{{ groups.vault_instances[0] }}:8200"
+    VAULT_TOKEN: "{{ lookup('env','VAULT_TOKEN') }}"
+    VAULT_CACERT: "{{ vault_tls_config_path }}/{{ vault_tls_ca_file }}"
+  command: >
+    {{ vault_bin_path }}/vault secrets enable \
+     -version=2 -path=systemcreds/ kv
+  register: result
+  failed_when: result.rc|int > 2
+  ignore_errors: true
+  tags:
+    - setup
+
+- name: create directory for policies
+  run_once: true
+  delegate_to: "{{ groups.vault_instances[0] }}"
+  file:
+    path: "/home/{{ vault_user }}/policies"
+    state: directory
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: 0700
+  tags:
+    - setup
+
+- name: copy policies
+  run_once: true
+  delegate_to: "{{ groups.vault_instances[0] }}"
+  copy:
+    src: "{{ item }}"
+    dest: "/home/{{ vault_user }}/policies/"
+    owner: "{{ vault_user }}"
+    group: "{{ vault_group }}"
+    mode: 0600
+  with_fileglob: "policies/*"
+  tags:
+    - setup
+
+- name: register policies
+  run_once: true
+  delegate_to: "{{ groups.vault_instances[0] }}"
+  environment:
+    VAULT_ADDR: "https://{{ groups.vault_instances[0] }}:8200"
+    VAULT_TOKEN: "{{ lookup('env','VAULT_TOKEN') }}"
+    VAULT_CACERT: "{{ vault_tls_config_path }}/{{ vault_tls_ca_file }}"
+  command: >
+       {{ vault_bin_path }}/vault policy write \
+       {{ item | basename }} {{ item }}.hcl
+  args:
+    chdir: "/home/{{ vault_user }}/policies/"
+  with_items: "{{ vault_policies }}"
+  tags:
+    - setup
+
+- name: generate a token for rotate-linux
+  run_once: true
+  delegate_to: "{{ groups.vault_instances[0] }}"
+  environment:
+    VAULT_ADDR: "https://{{ groups.vault_instances[0] }}:8200"
+    VAULT_TOKEN: "{{ lookup('env','VAULT_TOKEN') }}"
+    VAULT_CACERT: "{{ vault_tls_config_path }}/{{ vault_tls_ca_file }}"
+  command: >
+       {{ vault_bin_path }}/vault token create \
+       -policy=rotate-linux -period=24h
+       -format=json
+  register: renew_token
+  tags:
+    - rotation
+
+- name: set token fact
+  run_once: true
+  no_log: true
+  set_fact:
+    renewal_token: "'{{ renew_token.stdout| from_json | json_query(query) }}'"
+  vars:
+    query: "auth.client_token"
+  tags:
+    - rotation
+
+- name: Insert renewal token dotfile
+  lineinfile:
+    path: '/etc/profile.d/vault.sh'
+    line: "export VAULT_TOKEN={{ renewal_token }}"
+    create: true
+  when:
+    - ansible_os_family != 'Windows'
+  no_log: true
+  tags:
+    - rotation
+
+- name: Insert http(s) export in dotfile
+  lineinfile:
+    path: '/etc/profile.d/vault.sh'
+    line: "export VAULT_ADDR=https://{{ groups.vault_instances[0] }}:{{ vault_port }}"
+    create: true
+  when:
+    - ansible_os_family != 'Windows'
+  tags:
+    - rotation
+
+- name: Insert CA cert export in dotfile
+  lineinfile:
+    path: '/etc/profile.d/vault.sh'
+    line: "export VAULT_CACERT={{ vault_tls_config_path }}/{{ vault_tls_ca_file }}"
+    create: true
+  when:
+    - ansible_os_family != 'Windows'
+  tags:
+    - rotation
+
+
