@@ -123,10 +123,12 @@
 - name: Insert renewal token dotfile
   lineinfile:
     path: '/etc/profile.d/vault.sh'
+    regexp: 'export VAULT_TOKEN=.*'
     line: "export VAULT_TOKEN={{ renewal_token }}"
     create: true
   when:
     - ansible_os_family != 'Windows'
+    - "'vault_instances' not in group_names"
   no_log: true
   tags:
     - rotation
